@@ -2,19 +2,16 @@
 # =================================================================================
 # High-Performance SOCKS5 Proxy Management Matrix (Hardened & Secured Edition)
 # =================================================================================
+# 项目地址: https://github.com/4kercc/socks5-manager
 # 架构规范: 生产级安全加固版，具备极高稳定性、全系统兼容性与极致视觉体验
 # 功能说明: 基于 Gost 官方原版构建高性能、高并发、安全可控的 SOCKS5 代理运维管理系统
-# 安全加固特性:
-#   1. 移除每次动态拉取远程 Gist 的后门隐患，采用本地静态脚本持久化管理
-#   2. 随机高强度密码/用户名自动生成机制（回车默认即使用随机安全凭据）
-#   3. 移除第三方反代镜像，直连 GitHub 官方 Releases 并加入 SHA256 完整性哈希校验
-#   4. 严格收敛文件权限 (chmod 600) 与进程运行状态保护
 # =================================================================================
 
 export TERM=${TERM:-xterm-256color}
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
+REPO_RAW_URL="https://raw.githubusercontent.com/4kercc/socks5-manager/main/s5_secured.sh"
 CONFIG_FILE="/etc/socks5_gost.conf"
 INSTALLED_SCRIPT="/usr/local/share/socks5_matrix.sh"
 SHORTCUT_BIN="/usr/local/bin/S5"
@@ -137,20 +134,19 @@ generate_random_pass() {
 }
 
 # =================================================================================
-# 安全本地快捷方式持久化管理（杜绝动态远程命令执行隐患）
+# 安全本地快捷方式持久化管理
 # =================================================================================
 install_shortcut() {
     mkdir -p /usr/local/bin /usr/local/share 2>/dev/null
     local current_script
     current_script=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
     
-    # 将当前运行的脚本固化备份到 /usr/local/share/socks5_matrix.sh
+    # 将脚本固化到 /usr/local/share/socks5_matrix.sh
     if [ -f "$current_script" ] && [ "$current_script" != "$INSTALLED_SCRIPT" ]; then
         cp -f "$current_script" "$INSTALLED_SCRIPT" 2>/dev/null
         chmod 700 "$INSTALLED_SCRIPT" 2>/dev/null
     fi
 
-    # 生成安全的本地软链快捷启动器
     cat << 'EOF_S5' > "$SHORTCUT_BIN"
 #!/usr/bin/env bash
 if [ -f /usr/local/share/socks5_matrix.sh ]; then
@@ -374,7 +370,7 @@ download_core() {
     done
 
     if [ "$dl_success" -ne 1 ]; then
-        print_err "致命错误：无法连接到 GitHub 官方服务器，请检查服务器海外网络连通性。"
+        print_err "致命错误：无法连接到 GitHub 官方服务器，请检查服务器网络。"
         exit 1
     fi
 
@@ -640,6 +636,25 @@ test_port() {
     read -n 1 -s -r < /dev/tty 2>/dev/null || read -n 1 -s -r
 }
 
+update_script() {
+    print_banner
+    print_center "===== 🔄 在线更新控制面板 =====" "$COLOR_SEC"
+    echo ""
+    print_info "正在从官方仓库拉取最新版本: ${COLOR_INF}${REPO_RAW_URL}${RESET}"
+    local temp_script="/tmp/s5_update.sh"
+    if curl -fsSL "$REPO_RAW_URL" -o "$temp_script" && [ -s "$temp_script" ]; then
+        cp -f "$temp_script" "$INSTALLED_SCRIPT" 2>/dev/null
+        chmod 700 "$INSTALLED_SCRIPT" 2>/dev/null
+        rm -f "$temp_script"
+        print_ok "控制面板已成功更新到最新版本！正在刷新..."
+        sleep 1.2
+        exec bash "$INSTALLED_SCRIPT"
+    else
+        print_err "更新失败：无法从官方仓库获取更新包。"
+        sleep 2
+    fi
+}
+
 uninstall_socks5() {
     print_banner
     print_center "===== 🗑️ 彻底卸载 SOCKS5 服务 =====" "$COLOR_ERR"
@@ -694,11 +709,12 @@ menu_ui() {
         echo -e "  ${COLOR_MAIN} [5]${RESET} ${COLOR_TXT} 重新配置参数并重新部署 ${COLOR_DIM}(修改端口/账号密码并重新启动)${RESET}"
         echo -e "  ${COLOR_MAIN} [6]${RESET} ${COLOR_TXT} 查看系统运行日志与诊断 ${COLOR_DIM}(调取Systemd/进程运行日志)${RESET}"
         echo -e "  ${COLOR_MAIN} [7]${RESET} ${COLOR_TXT} 执行本地端口与隧道测试 ${COLOR_DIM}(测试Socks5代理通道连通性)${RESET}"
-        echo -e "  ${COLOR_MAIN} [8]${RESET} ${COLOR_TXT} 完全卸载并清理系统环境 ${COLOR_DIM}(删除二进制文件与服务配置)${RESET}"
-        echo -e "  ${COLOR_ERR} [9]${RESET}  ${COLOR_ERR} 退出控制面板并返回 Shell ${COLOR_DIM}(保持后台代理服务正常运行)${RESET}"
+        echo -e "  ${COLOR_MAIN} [8]${RESET} ${COLOR_TXT} 检查官方仓库更新与热刷 ${COLOR_DIM}(从4kercc/socks5-manager拉取更新)${RESET}"
+        echo -e "  ${COLOR_MAIN} [9]${RESET} ${COLOR_TXT} 完全卸载并清理系统环境 ${COLOR_DIM}(删除二进制文件与服务配置)${RESET}"
+        echo -e "  ${COLOR_ERR} [10]${RESET}${COLOR_ERR} 退出控制面板并返回 Shell ${COLOR_DIM}(保持后台代理服务正常运行)${RESET}"
         draw_line "$COLOR_MAIN"
         echo ""
-        printf "  ${COLOR_INF}⚡ 请输入你的选择 [1-9]: ${RESET}"
+        printf "  ${COLOR_INF}⚡ 请输入你的选择 [1-10]: ${RESET}"
         read -r CHOICE < /dev/tty 2>/dev/null || read -r CHOICE
         case "$CHOICE" in
             1) show_credentials ;;
@@ -708,13 +724,14 @@ menu_ui() {
             5) collect_parameters; download_core; setup_daemon; configure_firewall; restart_service; show_credentials ;;
             6) view_logs ;;
             7) test_port ;;
-            8) uninstall_socks5 ;;
-            9) 
+            8) update_script ;;
+            9) uninstall_socks5 ;;
+            10) 
                 print_ok "感谢使用 SOCKS5 Matrix 安全控制面板，再会！"
                 exit 0 
                 ;;
             *)
-                print_err "无效的选项，请重新输入数字 [1-9]。"
+                print_err "无效的选项，请重新输入数字 [1-10]。"
                 sleep 1.2
                 ;;
         esac
