@@ -231,19 +231,52 @@ check_environment_and_deps() {
 # =================================================================================
 # 多 IP 智能扫描与参数配置模块
 # =================================================================================
+is_valid_ipv4() {
+    local ip="$1"
+    local rx='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    if [[ "$ip" =~ $rx ]]; then
+        local IFS='.'
+        local -a octets=($ip)
+        for oct in "${octets[@]}"; do
+            if [ "$oct" -lt 0 ] || [ "$oct" -gt 255 ]; then
+                return 1
+            fi
+        done
+        # 排除回环地址 (127.x.x.x)
+        if [ "${octets[0]}" -eq 127 ]; then
+            return 1
+        fi
+        return 0
+    fi
+    return 1
+}
+
 detect_all_ips() {
     local detected=()
-    # 通过 ip -4 addr 列出所有非 127.0.0.1 的全局 IPv4 地址
+    # 精准提取所有 inet 后的 IPv4 地址，过滤掉接口名称与其它文本
     while IFS= read -r line; do
-        local ip
-        ip=$(echo "$line" | awk '{print $2}' | cut -d/ -f1)
-        if [[ -n "$ip" && ! "$ip" =~ ^127\. ]]; then
-            detected+=("$ip")
+        local candidate
+        candidate=$(echo "$line" | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}')
+        if [ -n "$candidate" ] && is_valid_ipv4 "$candidate"; then
+            detected+=("$candidate")
         fi
-    done < <(ip -4 addr show scope global 2>/dev/null)
+    done < <(ip -4 -o addr show scope global 2>/dev/null || ip -4 addr show 2>/dev/null)
 
-    # 去重
-    echo "${detected[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '
+    # 兜底：如果 ip 命令未能解析，尝试通过 hostname -I / ifconfig 提取
+    if [ ${#detected[@]} -eq 0 ]; then
+        if command -v hostname >/dev/null 2>&1; then
+            for cand in $(hostname -I 2>/dev/null); do
+                if is_valid_ipv4 "$cand"; then
+                    detected+=("$cand")
+                fi
+            done
+        fi
+    fi
+
+    # 严格去重并输出纯 IP 列表
+    if [ ${#detected[@]} -gt 0 ]; then
+        printf "%s\n" "${detected[@]}" | sort -u | tr '\n' ' '
+    fi
 }
 
 collect_parameters() {
