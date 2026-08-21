@@ -445,16 +445,23 @@ install_3proxy() {
     fi
     print_ok "3proxy 核心引擎部署就绪 [/usr/local/bin/3proxy]"
 
-    # 生成 3proxy 核心配置文件
-    mkdir -p /etc/3proxy
+    # 生成 3proxy 核心配置文件 (启用流量统计日志)
+    mkdir -p /etc/3proxy /var/log/3proxy
     cat << EOF > "$CONFIG_FILE"
 # =============================================================================
-# 3proxy SOCKS5 Multi-IP Configuration Matrix
+# 3proxy SOCKS5 Multi-IP Configuration Matrix (Traffic Stat Supported)
 # =============================================================================
 daemon
 maxconn 4000
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
+
+# -----------------------------------------------------------------------------
+# 流量日志记录模块 (精确记录每个客户端的 Ingress/Egress 字节数与 IP)
+# -----------------------------------------------------------------------------
+log /var/log/3proxy/access.log D
+logformat "L%Y-%m-%d %H:%M:%S\t%u\t%e\t%I\t%O\t%E"
+
 auth strong
 users ${SOCKS_USER}:CL:${SOCKS_PASS}
 
@@ -632,6 +639,92 @@ test_all_ips() {
     read -n 1 -s -r < /dev/tty 2>/dev/null || read -n 1 -s -r
 }
 
+format_bytes() {
+    local bytes="$1"
+    if [ -z "$bytes" ] || [ "$bytes" -le 0 ] 2>/dev/null; then
+        echo "0.00 B"
+        return
+    fi
+    if [ "$bytes" -ge 1073741824 ]; then
+        awk -v b="$bytes" 'BEGIN {printf "%.2f GB", b/1073741824}'
+    elif [ "$bytes" -ge 1048576 ]; then
+        awk -v b="$bytes" 'BEGIN {printf "%.2f MB", b/1048576}'
+    elif [ "$bytes" -ge 1024 ]; then
+        awk -v b="$bytes" 'BEGIN {printf "%.2f KB", b/1024}'
+    else
+        echo "${bytes} B"
+    fi
+}
+
+view_traffic_stats() {
+    print_banner
+    load_meta
+    print_center "===== 📊 各节点与全局流量实时消耗统计 =====" "$COLOR_SEC"
+    echo ""
+    local log_dir="/var/log/3proxy"
+    
+    if [ ! -d "$log_dir" ] || [ -z "$(ls -A "$log_dir" 2>/dev/null)" ]; then
+        print_warn "暂无流量日志记录（服务刚启动或尚未产生网络连接）。"
+        echo ""
+        draw_dash "$COLOR_SEC"
+        printf "\n   ${COLOR_SEC}👉 按任意键返回主控制面板...${RESET}"
+        read -n 1 -s -r < /dev/tty 2>/dev/null || read -n 1 -s -r
+        return
+    fi
+
+    # 计算今日日志文件
+    local today_log
+    today_log="${log_dir}/access.log.$(date +%Y.%m.%d)"
+    [ ! -f "$today_log" ] && today_log="${log_dir}/access.log"
+
+    print_info "统计周期: 【今日实时】与【历史累计】"
+    echo ""
+    draw_dash "$COLOR_SEC"
+
+    local total_all_in=0
+    local total_all_out=0
+
+    for idx in "${!SELECTED_IPS[@]}"; do
+        local ip="${SELECTED_IPS[$idx]}"
+        
+        # 统计该 IP 的历史全部流量 (awk 从所有匹配日志中累加)
+        local stats
+        stats=$(awk -v target="$ip" '
+            $3 == target {
+                in_b += $4
+                out_b += $5
+            }
+            END {
+                printf "%s %s", in_b+0, out_b+0
+            }
+        ' "${log_dir}"/access.log* 2>/dev/null)
+
+        local ip_in ip_out ip_total
+        ip_in=$(echo "$stats" | awk '{print $1}')
+        ip_out=$(echo "$stats" | awk '{print $2}')
+        ip_total=$((ip_in + ip_out))
+
+        total_all_in=$((total_all_in + ip_in))
+        total_all_out=$((total_all_out + ip_out))
+
+        echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [IP: ${ip}]${RESET}"
+        echo -e "      ${COLOR_INF}⬇️ 下载 (In) :${RESET} ${COLOR_TXT}$(format_bytes "$ip_in")${RESET}  |  ${COLOR_INF}⬆️ 上传 (Out):${RESET} ${COLOR_TXT}$(format_bytes "$ip_out")${RESET}"
+        echo -e "      ${COLOR_SUC}📦 总吞吐量  :${RESET} ${COLOR_WAR}$(format_bytes "$ip_total")${RESET}"
+        echo ""
+    done
+
+    local grand_total=$((total_all_in + total_all_out))
+    draw_line "$COLOR_MAIN"
+    echo -e "   ${COLOR_SUC}📈 全局汇总统计 :${RESET}"
+    echo -e "   • 全节点总下行: ${COLOR_TXT}$(format_bytes "$total_all_in")${RESET}  |  全节点总上行: ${COLOR_TXT}$(format_bytes "$total_all_out")${RESET}"
+    echo -e "   • ${COLOR_WAR}🔥 全服总消耗流量 : $(format_bytes "$grand_total")${RESET}"
+    draw_dash "$COLOR_SEC"
+    echo ""
+    echo -e "   ${COLOR_DIM}[提示] 流量数据基于 3proxy 高性能原生日志实时统计，已自动计入双向吞吐。${RESET}"
+    printf "\n   ${COLOR_SEC}👉 按任意键返回主控制面板...${RESET}"
+    read -n 1 -s -r < /dev/tty 2>/dev/null || read -n 1 -s -r
+}
+
 uninstall_all() {
     print_banner
     print_center "===== 🗑️ 彻底卸载 3proxy 服务 =====" "$COLOR_ERR"
@@ -675,28 +768,30 @@ menu_ui() {
         draw_dash "$COLOR_SEC"
         echo -e "  ${COLOR_MAIN} [1]${RESET} ${COLOR_TXT} 查看多 IP 节点连接凭证 ${COLOR_DIM}(展示各IP对应的SOCKS5链接)${RESET}"
         echo -e "  ${COLOR_MAIN} [2]${RESET} ${COLOR_TXT} 一键全节点「源进源出」出口测试 ${COLOR_DIM}(验证出口IP是否与入口一致)${RESET}"
-        echo -e "  ${COLOR_MAIN} [3]${RESET} ${COLOR_TXT} 启动 / 重启 3proxy 代理服务  ${COLOR_DIM}(平滑重载配置文件)${RESET}"
-        echo -e "  ${COLOR_MAIN} [4]${RESET} ${COLOR_TXT} 停止 3proxy 代理服务        ${COLOR_DIM}(安全终止代理守护进程)${RESET}"
-        echo -e "  ${COLOR_MAIN} [5]${RESET} ${COLOR_TXT} 重新配置参数与多 IP 列表    ${COLOR_DIM}(修改端口/密码/重新扫描IP)${RESET}"
-        echo -e "  ${COLOR_MAIN} [6]${RESET} ${COLOR_TXT} 彻底卸载并清理系统环境      ${COLOR_DIM}(删除3proxy及所有配置文件)${RESET}"
-        echo -e "  ${COLOR_ERR} [7]${RESET}  ${COLOR_ERR} 退出控制面板并返回 Shell    ${COLOR_DIM}(保持后台代理服务正常运行)${RESET}"
+        echo -e "  ${COLOR_MAIN} [3]${RESET} ${COLOR_TXT} 查看各节点与全局流量消耗统计 ${COLOR_DIM}(实时汇总各IP上传/下载流量)${RESET}"
+        echo -e "  ${COLOR_MAIN} [4]${RESET} ${COLOR_TXT} 启动 / 重启 3proxy 代理服务  ${COLOR_DIM}(平滑重载配置文件)${RESET}"
+        echo -e "  ${COLOR_MAIN} [5]${RESET} ${COLOR_TXT} 停止 3proxy 代理服务        ${COLOR_DIM}(安全终止代理守护进程)${RESET}"
+        echo -e "  ${COLOR_MAIN} [6]${RESET} ${COLOR_TXT} 重新配置参数与多 IP 列表    ${COLOR_DIM}(修改端口/密码/重新扫描IP)${RESET}"
+        echo -e "  ${COLOR_MAIN} [7]${RESET} ${COLOR_TXT} 彻底卸载并清理系统环境      ${COLOR_DIM}(删除3proxy及所有配置文件)${RESET}"
+        echo -e "  ${COLOR_ERR} [8]${RESET}  ${COLOR_ERR} 退出控制面板并返回 Shell    ${COLOR_DIM}(保持后台代理服务正常运行)${RESET}"
         draw_line "$COLOR_MAIN"
         echo ""
-        printf "  ${COLOR_INF}⚡ 请输入你的选择 [1-7]: ${RESET}"
+        printf "  ${COLOR_INF}⚡ 请输入你的选择 [1-8]: ${RESET}"
         read -r CHOICE < /dev/tty 2>/dev/null || read -r CHOICE
         case "$CHOICE" in
             1) show_credentials ;;
             2) test_all_ips ;;
-            3) restart_service ;;
-            4) stop_service ;;
-            5) collect_parameters; configure_kernel_routing; install_3proxy; configure_firewall; show_credentials ;;
-            6) uninstall_all ;;
-            7) 
+            3) view_traffic_stats ;;
+            4) restart_service ;;
+            5) stop_service ;;
+            6) collect_parameters; configure_kernel_routing; install_3proxy; configure_firewall; show_credentials ;;
+            7) uninstall_all ;;
+            8) 
                 print_ok "感谢使用 SOCKS5 Multi-IP Matrix，再会！"
                 exit 0 
                 ;;
             *)
-                print_err "无效的选项，请重新输入数字 [1-7]。"
+                print_err "无效的选项，请重新输入数字 [1-8]。"
                 sleep 1.2
                 ;;
         esac
