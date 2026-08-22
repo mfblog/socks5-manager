@@ -20,6 +20,7 @@ CONFIG_FILE="/etc/3proxy/3proxy.cfg"
 CONFIG_META="/etc/3proxy/3proxy_meta.conf"
 INSTALLED_SCRIPT="/usr/local/share/socks5_multi_ip.sh"
 SHORTCUT_BIN="/usr/local/bin/S5M"
+SHORTCUT_LOWER_BIN="/usr/local/bin/s5m"
 UI_WIDTH=68
 
 ESC=$(printf '\033')
@@ -137,7 +138,7 @@ generate_random_pass() {
 }
 
 # =================================================================================
-# 本地快捷指令安装与持久化配置
+# 本地快捷指令安装与持久化配置 (支持大小写 S5M / s5m 自动识别)
 # =================================================================================
 install_shortcut() {
     mkdir -p /usr/local/bin /usr/local/share 2>/dev/null
@@ -159,6 +160,10 @@ else
 fi
 EOF_S5M
     chmod 755 "$SHORTCUT_BIN" 2>/dev/null
+
+    # 兼容小写指令 s5m
+    cp -f "$SHORTCUT_BIN" "$SHORTCUT_LOWER_BIN" 2>/dev/null
+    chmod 755 "$SHORTCUT_LOWER_BIN" 2>/dev/null
 }
 
 save_meta() {
@@ -809,7 +814,7 @@ uninstall_all() {
             rm -f /etc/systemd/system/3proxy.service
             systemctl daemon-reload
         }
-        rm -rf /etc/3proxy /usr/local/bin/3proxy "$SHORTCUT_BIN" "$INSTALLED_SCRIPT" /etc/sysctl.d/99-3proxy-network.conf
+        rm -rf /etc/3proxy /usr/local/bin/3proxy "$SHORTCUT_BIN" "$SHORTCUT_LOWER_BIN" "$INSTALLED_SCRIPT" /etc/sysctl.d/99-3proxy-network.conf
         print_ok "3proxy 多 IP 代理系统已彻底清理复原！"
         exit 0
     else
@@ -823,7 +828,7 @@ menu_ui() {
         load_meta
         print_banner
         echo -e "  ${COLOR_SEC}┌────────────────────────────────────────────────────────────┐${RESET}"
-        echo -e "  ${COLOR_SEC}│${RESET}  ${ICON_NOTE} ${COLOR_TXT}快捷提示:${RESET} 在任意终端输入 ${COLOR_SUC}S5M${RESET} 即可随时打开多 IP 控制台  ${COLOR_SEC}│${RESET}"
+        echo -e "  ${COLOR_SEC}│${RESET}  ${ICON_NOTE} ${COLOR_TXT}快捷提示:${RESET} 在终端输入 ${COLOR_SUC}s5m${RESET} 或 ${COLOR_SUC}S5M${RESET} 即可随时打开控制台      ${COLOR_SEC}│${RESET}"
         echo -e "  ${COLOR_SEC}└────────────────────────────────────────────────────────────┘${RESET}"
         echo ""
         echo -e "   📡 服务运行状态  : $(get_service_status)"

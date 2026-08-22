@@ -15,6 +15,7 @@ REPO_RAW_URL="https://raw.githubusercontent.com/4kercc/socks5-manager/main/s5_se
 CONFIG_FILE="/etc/socks5_gost.conf"
 INSTALLED_SCRIPT="/usr/local/share/socks5_matrix.sh"
 SHORTCUT_BIN="/usr/local/bin/S5"
+SHORTCUT_LOWER_BIN="/usr/local/bin/s5"
 UI_WIDTH=68
 
 ESC=$(printf '\033')
@@ -134,7 +135,7 @@ generate_random_pass() {
 }
 
 # =================================================================================
-# 安全本地快捷方式持久化管理
+# 安全本地快捷方式持久化管理 (支持大小写 S5 / s5 自动识别)
 # =================================================================================
 install_shortcut() {
     mkdir -p /usr/local/bin /usr/local/share 2>/dev/null
@@ -157,6 +158,10 @@ else
 fi
 EOF_S5
     chmod 755 "$SHORTCUT_BIN" 2>/dev/null
+
+    # 兼容小写指令 s5
+    cp -f "$SHORTCUT_BIN" "$SHORTCUT_LOWER_BIN" 2>/dev/null
+    chmod 755 "$SHORTCUT_LOWER_BIN" 2>/dev/null
 }
 
 save_config() {
@@ -679,7 +684,7 @@ uninstall_socks5() {
             rc-update del socks5 default >/dev/null 2>&1
             rm -f /etc/init.d/socks5
         }
-        rm -f /usr/local/bin/gost "$SHORTCUT_BIN" "$INSTALLED_SCRIPT" "$CONFIG_FILE"
+        rm -f /usr/local/bin/gost "$SHORTCUT_BIN" "$SHORTCUT_LOWER_BIN" "$INSTALLED_SCRIPT" "$CONFIG_FILE"
         print_ok "SOCKS5 代理系统已彻底清理并恢复！"
         exit 0
     else
@@ -696,7 +701,7 @@ menu_ui() {
         load_config
         print_banner
         echo -e "  ${COLOR_SEC}┌────────────────────────────────────────────────────────────┐${RESET}"
-        echo -e "  ${COLOR_SEC}│${RESET}  ${ICON_NOTE} ${COLOR_TXT}快捷提示:${RESET} 在任意终端输入 ${COLOR_SUC}S5${RESET} 即可随时打开本地控制台     ${COLOR_SEC}│${RESET}"
+        echo -e "  ${COLOR_SEC}│${RESET}  ${ICON_NOTE} ${COLOR_TXT}快捷提示:${RESET} 在终端输入 ${COLOR_SUC}s5${RESET} 或 ${COLOR_SUC}S5${RESET} 即可随时打开控制台        ${COLOR_SEC}│${RESET}"
         echo -e "  ${COLOR_SEC}└────────────────────────────────────────────────────────────┘${RESET}"
         echo ""
         echo -e "   📡 服务运行状态  : $(get_service_status)"
