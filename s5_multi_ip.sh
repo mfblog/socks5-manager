@@ -186,7 +186,7 @@ load_meta() {
 # =================================================================================
 check_environment_and_deps() {
     print_banner
-    print_step "[1/5] 正在初始化系统编译环境与网络组件"
+    print_step "[1/5] 正在初始化系统环境与网络组件"
     
     [ "$(id -u)" -ne 0 ] && { print_err "权限拒绝：必须使用 Root 权限，请通过 sudo -i 运行。"; exit 1; }
 
@@ -203,25 +203,25 @@ check_environment_and_deps() {
     print_info "检测到操作系统发行版：${COLOR_TXT}${OS_TYPE}${RESET}"
 
     local NEED_INSTALL=()
-    for cmd in curl wget gcc make iptables ip openssl tar; do
+    for cmd in curl wget iptables ip gzip openssl sha256sum; do
         if ! command -v "$cmd" >/dev/null 2>&1; then 
             NEED_INSTALL+=("$cmd")
         fi
     done
 
     if [ ${#NEED_INSTALL[@]} -ne 0 ]; then
-        print_note "正在安装缺失的基础编译工具与依赖：[ ${NEED_INSTALL[*]} ]..."
+        print_note "正在安装缺失的系统组件与依赖：[ ${NEED_INSTALL[*]} ]..."
         case "$OS_TYPE" in
             alpine) 
-                apk add --no-cache "${NEED_INSTALL[@]}" build-base linux-headers iproute2 iputils openssl >/dev/null 2>&1 ;;
+                apk add --no-cache "${NEED_INSTALL[@]}" iproute2 iputils openssl coreutils gzip >/dev/null 2>&1 ;;
             debian) 
                 apt-get update -qq >/dev/null 2>&1
-                apt-get install -yqq --no-install-recommends "${NEED_INSTALL[@]}" build-essential iproute2 iputils-ping openssl >/dev/null 2>&1 ;;
+                apt-get install -yqq --no-install-recommends "${NEED_INSTALL[@]}" iproute2 iputils-ping openssl coreutils gzip >/dev/null 2>&1 ;;
             rhel) 
                 if command -v dnf >/dev/null 2>&1; then
-                    dnf install -y -q "${NEED_INSTALL[@]}" iproute iputils openssl make gcc >/dev/null 2>&1
+                    dnf install -y -q "${NEED_INSTALL[@]}" iproute iputils openssl coreutils gzip >/dev/null 2>&1
                 else
-                    yum install -y -q "${NEED_INSTALL[@]}" iproute iputils openssl make gcc >/dev/null 2>&1
+                    yum install -y -q "${NEED_INSTALL[@]}" iproute iputils openssl coreutils gzip >/dev/null 2>&1
                 fi ;;
         esac
     fi
@@ -412,38 +412,102 @@ EOF_SYS
 }
 
 # =================================================================================
-# 3proxy 编译与配置文件生成模块
+# 3proxy 预编译包下载与部署模块 (直接从 Git 仓库拉取 + SHA256 完整性校验)
 # =================================================================================
 install_3proxy() {
-    print_step "[4/5] 编译安装 3proxy 核心代理服务"
+    print_step "[4/5] 部署 3proxy 核心代理服务 (免编译极速安装)"
 
-    if ! command -v 3proxy >/dev/null 2>&1; then
-        print_info "正在从 GitHub 官方源拉取 3proxy 源码..."
-        local build_dir="/tmp/3proxy_build"
-        rm -rf "$build_dir" && mkdir -p "$build_dir"
-        
-        local tar_url="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
-        if curl -fL --connect-timeout 10 --max-time 60 "$tar_url" -o "$build_dir/3proxy.tar.gz" && [ -s "$build_dir/3proxy.tar.gz" ]; then
-            tar -xzf "$build_dir/3proxy.tar.gz" -C "$build_dir"
-            local src_dir
-            src_dir=$(find "$build_dir" -maxdepth 1 -type d -name "3proxy-*" | head -n 1)
-            if [ -d "$src_dir" ]; then
-                cd "$src_dir" || exit 1
-                print_info "正在编译 3proxy 高性能二进制文件 (C语言极速内核)..."
-                make -f Makefile.Linux >/dev/null 2>&1
-                make -f Makefile.Linux install >/dev/null 2>&1
-                cp -f bin/3proxy /usr/local/bin/3proxy 2>/dev/null || true
-                chmod 755 /usr/local/bin/3proxy
+    if ! command -v 3proxy >/dev/null 2>&1 || [ ! -f /usr/local/bin/3proxy ]; then
+        local ARCH
+        ARCH=$(uname -m)
+        local DL_NAME=""
+        local EXPECTED_HASH=""
+
+        case "$ARCH" in
+            x86_64|amd64)
+                DL_NAME="3proxy-linux-amd64.gz"
+                EXPECTED_HASH="08beb02c4ab0c0c715f5f701250d249dcff8a4b1889ae089a921cc38e1bdb484"
+                ;;
+            aarch64|arm64)
+                DL_NAME="3proxy-linux-arm64.gz"
+                EXPECTED_HASH="494cb64f7609e9c250cc31bc20057e7a4569cb225a3da40b9461e3ebc50850c4"
+                ;;
+            armv7l|armv7|armhf)
+                DL_NAME="3proxy-linux-armv7.gz"
+                EXPECTED_HASH="4a7f66e8284caa5e9a5224003c6b11c7af3a38e4d7587235d22f070718427d06"
+                ;;
+            *)
+                print_err "未匹配到预编译二进制架构：${ARCH}，正在尝试本地源码编译作为备用方案..."
+                ;;
+        esac
+
+        local dl_success=0
+        if [ -n "$DL_NAME" ]; then
+            local RAW_URL="https://raw.githubusercontent.com/4kercc/socks5-manager/main/bin/${DL_NAME}"
+            print_info "正在从 GitHub 官方仓库直接下载预编译核心包: ${COLOR_INF}${DL_NAME}${RESET}"
+
+            local max_retries=3
+            local retry_count=0
+
+            while [ $retry_count -lt $max_retries ]; do
+                ((retry_count++))
+                if curl -fL --progress-bar --connect-timeout 10 --max-time 60 "$RAW_URL" -o /tmp/3proxy.gz; then
+                    if [ -s /tmp/3proxy.gz ]; then
+                        dl_success=1
+                        break
+                    fi
+                fi
+                print_warn "下载第 ${retry_count}/${max_retries} 次失败，2 秒后重试..."
+                sleep 2
+            done
+
+            if [ "$dl_success" -eq 1 ]; then
+                # SHA256 完整性哈希校验
+                print_info "正在进行二进制包 SHA256 完整性哈希校验..."
+                local ACTUAL_HASH
+                ACTUAL_HASH=$(sha256sum /tmp/3proxy.gz | awk '{print $1}')
+
+                if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+                    print_err "安全拦截：SHA256 哈希校验失败！预期: ${EXPECTED_HASH}, 实际: ${ACTUAL_HASH}"
+                    rm -f /tmp/3proxy.gz
+                    dl_success=0
+                else
+                    print_ok "SHA256 校验通过！[官方二进制包完整无篡改]"
+                    gzip -d -f /tmp/3proxy.gz
+                    chmod 755 /tmp/3proxy
+                    mv -f /tmp/3proxy /usr/local/bin/3proxy
+                    print_ok "3proxy 官方预编译核心部署成功 [/usr/local/bin/3proxy]"
+                fi
             fi
         fi
-        rm -rf "$build_dir"
+
+        # 备用容灾方案：如果预编译下载或校验失败，自动降级为本地源码编译
+        if [ "$dl_success" -ne 1 ] && [ ! -f /usr/local/bin/3proxy ]; then
+            print_warn "预编译包不可用，正在自动切换为源码编译备用安装..."
+            local build_dir="/tmp/3proxy_build"
+            rm -rf "$build_dir" && mkdir -p "$build_dir"
+            local tar_url="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
+            if curl -fL --connect-timeout 10 --max-time 60 "$tar_url" -o "$build_dir/3proxy.tar.gz" && [ -s "$build_dir/3proxy.tar.gz" ]; then
+                tar -xzf "$build_dir/3proxy.tar.gz" -C "$build_dir"
+                local src_dir
+                src_dir=$(find "$build_dir" -maxdepth 1 -type d -name "3proxy-*" | head -n 1)
+                if [ -d "$src_dir" ]; then
+                    cd "$src_dir" || exit 1
+                    make -f Makefile.Linux >/dev/null 2>&1
+                    make -f Makefile.Linux install >/dev/null 2>&1
+                    cp -f bin/3proxy /usr/local/bin/3proxy 2>/dev/null || true
+                    chmod 755 /usr/local/bin/3proxy
+                fi
+            fi
+            rm -rf "$build_dir"
+        fi
     fi
 
     if ! command -v 3proxy >/dev/null 2>&1 && [ ! -f /usr/local/bin/3proxy ]; then
-        print_err "3proxy 编译失败，请检查 gcc / make 环境。"
+        print_err "3proxy 核心安装失败，请检查网络设置或系统权限。"
         exit 1
     fi
-    print_ok "3proxy 核心引擎部署就绪 [/usr/local/bin/3proxy]"
+    print_ok "3proxy 核心代理引擎部署就绪 [/usr/local/bin/3proxy]"
 
     # 生成 3proxy 核心配置文件 (启用流量统计日志)
     mkdir -p /etc/3proxy /var/log/3proxy
