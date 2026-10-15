@@ -683,8 +683,8 @@ show_credentials() {
     for idx in "${!SELECTED_IPS[@]}"; do
         local ip="${SELECTED_IPS[$idx]}"
         local link_ip=""
+        printf "   🔹 节点 %s [入站: %s] 正在查询公网 IP（最多 8 秒）...\n" "$((idx+1))" "$ip"
         link_ip=$(get_node_public_ip "$ip") || link_ip=""
-        echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [入站: ${ip}]${RESET}"
         if [ -n "$link_ip" ]; then
             echo -e "      ${COLOR_INF}SOCKS5 链接:${RESET} ${COLOR_TXT}socks5://${SOCKS_USER}:${SOCKS_PASS}@${link_ip}:${SOCKS_PORT}${RESET}"
             echo -e "      ${COLOR_DIM}客户端参数: IP=${link_ip} | 端口=${SOCKS_PORT} | 账号=${SOCKS_USER} | 密码=${SOCKS_PASS}${RESET}"
@@ -694,8 +694,13 @@ show_credentials() {
         echo ""
     done
     draw_dash "$COLOR_SEC"
-    printf "\n   ${COLOR_SEC}👉 按任意键返回主控制面板...${RESET}"
-    read -n 1 -s -r < /dev/tty 2>/dev/null || read -n 1 -s -r
+    if [ -t 0 ] && [ -t 1 ]; then
+        printf "\n   ${COLOR_SEC}👉 按任意键返回主控制面板...${RESET}"
+        read -n 1 -s -r < /dev/tty
+    else
+        echo ""
+        print_info "非交互终端：已保留节点结果，可在交互终端输入 s5m 查看。"
+    fi
 }
 
 test_all_ips() {
@@ -897,14 +902,20 @@ main() {
     install_shortcut
     check_environment_and_deps
     if [ -f "$CONFIG_FILE" ] && [ -f "/usr/local/bin/3proxy" ]; then
-        menu_ui
+        if [ -t 0 ] && [ -t 1 ]; then
+            menu_ui
+        else
+            show_credentials
+        fi
     else
         collect_parameters
         configure_kernel_routing
         install_3proxy
         configure_firewall
         show_credentials
-        menu_ui
+        if [ -t 0 ] && [ -t 1 ]; then
+            menu_ui
+        fi
     fi
 }
 
