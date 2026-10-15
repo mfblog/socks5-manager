@@ -2,7 +2,7 @@
 # =================================================================================
 # Multi-IP SOCKS5 Proxy Management Matrix (3proxy - Ingress/Egress IP Binding)
 # =================================================================================
-# 项目地址: https://github.com/4kercc/socks5-manager
+# 项目地址: https://github.com/mfblog/socks5-manager
 # 核心架构: 基于 3proxy 实现多 IP 服务器 SOCKS5 代理严格「源进源出」
 # 核心功能:
 #   1. 自动扫描服务器所有有效公网 IPv4 地址
@@ -658,6 +658,16 @@ stop_service() {
     sleep 1.2
 }
 
+# 配置中保存的是 3proxy 监听地址；NAT 环境下可通过该节点查询对应的公网出口。
+get_node_public_ip() {
+    local ingress_ip="$1" public_ip
+    public_ip=$(curl -fsS --noproxy '' --socks5 "${ingress_ip}:${SOCKS_PORT}" \
+        --proxy-user "${SOCKS_USER}:${SOCKS_PASS}" \
+        --connect-timeout 4 --max-time 8 https://api.ipify.org 2>/dev/null) || return 1
+    is_valid_ipv4 "$public_ip" || return 1
+    printf '%s' "$public_ip"
+}
+
 show_credentials() {
     print_banner
     load_meta
@@ -668,13 +678,19 @@ show_credentials() {
     echo -e "   ${COLOR_INF}🔑 统一认证密码 :${RESET} ${COLOR_TXT}${SOCKS_PASS}${RESET}"
     echo ""
     draw_dash "$COLOR_SEC"
-    echo -e "   ${COLOR_WAR}【各个独立 IP 专属代理连接信息】（连接哪个 IP，出口即是哪个 IP）：${RESET}"
+    echo -e "   ${COLOR_WAR}【各个独立 IP 专属代理连接信息】（内网入站地址自动转换为公网出口地址）：${RESET}"
     echo ""
     for idx in "${!SELECTED_IPS[@]}"; do
         local ip="${SELECTED_IPS[$idx]}"
-        echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [IP: ${ip}]${RESET}"
-        echo -e "      ${COLOR_INF}SOCKS5 链接:${RESET} ${COLOR_TXT}socks5://${SOCKS_USER}:${SOCKS_PASS}@${ip}:${SOCKS_PORT}${RESET}"
-        echo -e "      ${COLOR_DIM}客户端参数: IP=${ip} | 端口=${SOCKS_PORT} | 账号=${SOCKS_USER} | 密码=${SOCKS_PASS}${RESET}"
+        local link_ip=""
+        link_ip=$(get_node_public_ip "$ip") || link_ip=""
+        echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [入站: ${ip}]${RESET}"
+        if [ -n "$link_ip" ]; then
+            echo -e "      ${COLOR_INF}SOCKS5 链接:${RESET} ${COLOR_TXT}socks5://${SOCKS_USER}:${SOCKS_PASS}@${link_ip}:${SOCKS_PORT}${RESET}"
+            echo -e "      ${COLOR_DIM}客户端参数: IP=${link_ip} | 端口=${SOCKS_PORT} | 账号=${SOCKS_USER} | 密码=${SOCKS_PASS}${RESET}"
+        else
+            print_warn "无法查询 ${ip} 的公网出口 IP，暂不生成链接；请检查该节点连接。"
+        fi
         echo ""
     done
     draw_dash "$COLOR_SEC"
@@ -685,21 +701,24 @@ show_credentials() {
 test_all_ips() {
     print_banner
     load_meta
-    print_note "正在对所有配置的 IP 进行代理隧道与「源进源出」出口验证..."
+    print_note "先经各节点本地入站查询公网 IP，再经该公网地址测试连接及出口..."
     echo ""
     for idx in "${!SELECTED_IPS[@]}"; do
-        local ip="${SELECTED_IPS[$idx]}"
-        printf "   🌐 测试节点 $((idx+1)) [入站: %s] ... " "$ip"
-        local exit_ip
-        exit_ip=$(curl -s --socks5 "${SOCKS_USER}:${SOCKS_PASS}@${ip}:${SOCKS_PORT}" https://api.ipify.org -m 5 2>/dev/null)
-        if [ -n "$exit_ip" ]; then
-            if [ "$exit_ip" == "$ip" ]; then
-                echo -e "${COLOR_SUC}✔ 成功！出口 IP: ${exit_ip} [源进源出匹配 100%]${RESET}"
-            else
-                echo -e "${COLOR_WAR}⚠ 连通但出口不一致 (当前出口: ${exit_ip})${RESET}"
-            fi
+        local ip="${SELECTED_IPS[$idx]}" public_ip="" exit_ip=""
+        public_ip=$(get_node_public_ip "$ip") || public_ip=""
+        if [ -z "$public_ip" ]; then
+            echo -e "   🌐 测试节点 $((idx+1)) [内网入站: ${ip}] ... ${COLOR_ERR}✖ 无法查询公网 IP${RESET}"
+            continue
+        fi
+        printf "   🌐 测试节点 $((idx+1)) [公网入站: %s] ... " "$public_ip"
+        # 第二次请求走公网入口；不能仅将第一次查询到的出口 IP 与自身比较。
+        exit_ip=$(get_node_public_ip "$public_ip") || exit_ip=""
+        if [ -z "$exit_ip" ]; then
+            echo -e "${COLOR_ERR}✖ 公网入口连接失败${RESET}"
+        elif [ "$exit_ip" = "$public_ip" ]; then
+            echo -e "${COLOR_SUC}✔ 成功！出口 IP: ${exit_ip} [公网入口与出口一致]${RESET}"
         else
-            echo -e "${COLOR_ERR}✖ 连接超时或失败${RESET}"
+            echo -e "${COLOR_WAR}⚠ 公网入口可连，但出口不一致 (当前出口: ${exit_ip})${RESET}"
         fi
     done
     echo ""
@@ -756,12 +775,13 @@ view_traffic_stats() {
     for idx in "${!SELECTED_IPS[@]}"; do
         local ip="${SELECTED_IPS[$idx]}"
         
-        # 统计该 IP 的历史全部流量 (awk 从所有匹配日志中累加)
+        # 日志字段为 日期 时间 用户名 出站绑定IP 入站字节 出站字节 错误码；
+        # NAT 后公网 IP 不在日志里，按绑定的内网 IP 汇总再显示其公网映射。
         local stats
         stats=$(awk -v target="$ip" '
-            $3 == target {
-                in_b += $4
-                out_b += $5
+            $4 == target {
+                in_b += $5
+                out_b += $6
             }
             END {
                 printf "%s %s", in_b+0, out_b+0
@@ -776,7 +796,13 @@ view_traffic_stats() {
         total_all_in=$((total_all_in + ip_in))
         total_all_out=$((total_all_out + ip_out))
 
-        echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [IP: ${ip}]${RESET}"
+        local public_ip=""
+        public_ip=$(get_node_public_ip "$ip") || public_ip=""
+        if [ -n "$public_ip" ]; then
+            echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [公网 IP: ${public_ip}]${RESET}"
+        else
+            echo -e "   🔹 ${COLOR_MAIN}节点 $((idx+1)) [公网 IP: 查询失败，内网入站 ${ip}]${RESET}"
+        fi
         echo -e "      ${COLOR_INF}⬇️ 下载 (In) :${RESET} ${COLOR_TXT}$(format_bytes "$ip_in")${RESET}  |  ${COLOR_INF}⬆️ 上传 (Out):${RESET} ${COLOR_TXT}$(format_bytes "$ip_out")${RESET}"
         echo -e "      ${COLOR_SUC}📦 总吞吐量  :${RESET} ${COLOR_WAR}$(format_bytes "$ip_total")${RESET}"
         echo ""
