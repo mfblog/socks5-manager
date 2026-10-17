@@ -336,10 +336,10 @@ collect_parameters() {
         case "$SOCKS_PORT" in
             ''|*[!0-9]*) print_warn "格式无效：端口必须仅由纯数字组成。" ;;
             *)
-                if [ "$SOCKS_PORT" -ge 1024 ] && [ "$SOCKS_PORT" -le 65535 ]; then
+                if [ "$SOCKS_PORT" -ge 1000 ] && [ "$SOCKS_PORT" -le 65535 ]; then
                     break
                 else
-                    print_warn "范围错误：端口必须在 1024 到 65535 之间。"
+                    print_warn "范围错误：端口必须在 1000 到 65535 之间。"
                 fi
                 ;;
         esac
